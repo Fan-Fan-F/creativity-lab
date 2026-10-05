@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Creativity Lab · 创造力实验室</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Creativity Lab 首页"><span class="brand-mark">✳</span><span>Creativity <strong>Lab</strong></span></a>
+    <span class="top-note"><span class="status-dot"></span>本地实验室 <span class="local">127.0.0.1</span></span>
+  </header>
+  <main class="shell">
+    <section class="intro">
+      <div><p class="eyebrow">EXPLORE · CRITIQUE · EVOLVE</p><h1>让想法走出<br>第一个答案。</h1><p class="lede">寻找不同的机制，主动挑出弱点，再把值得验证的想法留下来。</p></div>
+      <div class="intro-note"><span class="mini-index">01 / METHOD</span><p>创造力需要新颖，<br>也需要有用与可验证。</p><span class="note-foot">一次运行是一组待检验的假设。</span></div>
+    </section>
+    <div class="workspace">
+      <aside class="composer">
+        <div class="section-heading"><h2>从一个难题开始</h2><button id="example" class="text-button" type="button">填入示例 ↗</button></div>
+        <form id="run-form">
+          <label for="task">你想解决什么？</label>
+          <textarea id="task" name="task" rows="6" required minlength="8" maxlength="12000" placeholder="描述目标、使用场景、预算，以及什么算成功……"></textarea>
+          <label for="references">已知条件与资料 <span class="optional">选填 · 每行一条</span></label>
+          <textarea id="references" name="references" rows="3" maxlength="60000" placeholder="已有事实、尝试过的方案、不能违反的限制"></textarea>
+          <fieldset class="mode-control"><legend>运行方式</legend><label class="mode-option"><input type="radio" name="provider" value="demo" checked><span><strong>演示</strong><small>无需 API，查看完整流程</small></span></label><label class="mode-option"><input type="radio" name="provider" value="live"><span><strong>真实模型</strong><small id="model-note">正在读取本地配置</small></span></label></fieldset>
+          <p id="mode-notice" class="notice">演示使用固定样例与任务适配，展示流程；分数不代表模型创造力。</p>
+          <details class="settings"><summary>实验参数 <span>预算与搜索深度</span></summary><div class="settings-grid"><label for="rounds">探索轮数<input id="rounds" type="number" value="2" min="1" max="8" required></label><label for="candidates">每轮候选<input id="candidates" type="number" value="4" min="2" max="12" required></label><label for="max-calls">调用上限<input id="max-calls" type="number" value="30" min="1" max="200" required></label><label for="seed">随机种子<input id="seed" type="number" value="42" min="0" max="2147483647" required></label></div><label for="search-mode">搜索策略<select id="search-mode"><option value="lab">实验室 · 变换、批评、档案反馈</option><option value="baseline">基线 · 直接重复生成</option></select></label><p class="setting-help">同一任务分别运行两种策略，可导出结果开展盲评。调用上限控制 API 请求次数，费用取决于模型和文本长度。</p></details>
+          <button id="run-button" class="primary-button" type="submit"><span>开始探索</span><span aria-hidden="true">→</span></button>
+          <p id="run-status" class="run-status" role="status" aria-live="polite">结果仅保存在当前服务内存中，请及时导出。</p>
+        </form>
+      </aside>
+      <section class="results" aria-label="探索结果">
+        <div class="results-header"><div><p class="eyebrow">IDEA ARCHIVE</p><h2>候选想法</h2></div><div id="exports" class="export-actions" hidden><button id="export-json" class="small-button" type="button">JSON ↓</button><button id="export-md" class="small-button" type="button">Markdown ↓</button></div></div>
+        <div id="empty-state" class="empty-state"><div class="orbital" aria-hidden="true"><span class="orbit-center">✳</span><span class="orbit-node n1"></span><span class="orbit-node n2"></span><span class="orbit-node n3"></span></div><h3>把一个问题，变成一片可能。</h3><p>输入目标后，观察不同机制如何产生候选、接受批评，并进入档案。</p><div class="pipeline"><span>提出</span><i>→</i><span>变换</span><i>→</i><span>筛查</span><i>→</i><span>验证计划</span></div></div>
+        <div id="loading-state" class="loading-state" hidden><span class="loader"></span><h3>正在探索可行的不同方向</h3><p id="loading-copy">生成候选、审查假设，再整理成可验证的方案。真实模型运行可能需要数分钟。</p><p class="muted">保持页面打开。调用数不会超过设定上限。</p></div>
+        <div id="run-output" hidden>
+          <div class="run-meta"><span id="result-mode" class="badge"></span><span id="result-strategy"></span><span id="result-calls"></span><span id="result-tokens"></span></div>
+          <p id="result-notice" class="result-notice"></p>
+          <div class="archive-panel"><div class="archive-heading"><div><h3>探索分布</h3><p>文本差异代理 × 有用性评分</p></div><span id="archive-count" class="archive-count"></span></div><div id="scatter" class="scatter"><div class="plot-grid"><span class="plot-zone">差异大 · 仍需证明有用</span></div><div id="plot-points" class="plot-points"></div><span class="axis-y">有用性（模型评分）↑</span><span class="axis-x">文本差异代理 →</span><span class="tick zero">0</span><span class="tick one-y">1</span><span class="tick one-x">1</span></div><p class="chart-help">点选查看方案。文本差异比较候选与提供的资料，不等于原创性；模型评分不是现实验证。</p></div>
+          <div class="ideas-heading"><h3 id="ideas-count">候选清单</h3><select id="sort-ideas" aria-label="排列候选"><option value="quality">综合质量优先</option><option value="novelty">文本差异优先</option><option value="usefulness">有用性优先</option><option value="original">生成顺序</option></select></div>
+          <div id="ideas" class="ideas-grid"></div>
+          <details class="trace-panel"><summary>查看探索过程 <span id="trace-count"></span></summary><div id="trace"></div></details>
+        </div>
+      </section>
+    </div>
+    <section class="research-strip"><div><p class="eyebrow">RESEARCH INTO PRACTICE</p><h2>把研究变成可测试的方法</h2></div><div class="research-items"><a href="https://arxiv.org/abs/1504.04909" target="_blank" rel="noopener noreferrer"><span>01</span><strong>保留多样性</strong><small>MAP-Elites · 2015 ↗</small></a><a href="https://arxiv.org/abs/2303.17651" target="_blank" rel="noopener noreferrer"><span>02</span><strong>自我改进</strong><small>Self-Refine · 2023 ↗</small></a><a href="https://arxiv.org/abs/2305.10601" target="_blank" rel="noopener noreferrer"><span>03</span><strong>保留多条路径</strong><small>Tree of Thoughts · 2023 ↗</small></a></div><p class="research-foot">研究提供设计依据；当前实现的效果，需要独立的基线对照与人类盲评来验证。</p></section>
+  </main>
+  <footer><span>Creativity Lab</span><span>想法可以大胆，证据要具体。</span></footer>
+</body>
+</html>
