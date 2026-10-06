@@ -1,5 +1,17 @@
 # Validation record
 
+## Version 0.3.0 — protocols, model discovery and connection recovery
+
+Validated on Windows with Python 3.13 on 2026-10-06.
+
+- **117 tests passed**. Twenty protocol tests and seven web discovery/probe tests use real loopback HTTP connections, without supplier API calls. They cover Chat Completions, Responses and Messages request bodies, authentication, output extraction, cache-aware usage, model pagination, failure classification, refusal, truncation, timeout and credential-safe redirect blocking.
+- Discovery accepts an empty model name, reads only the directory, preserves the applied configuration, and permits manual names when the directory is unavailable. Accepted jobs retain their entire model/endpoint/authentication/timeout/output configuration after later settings changes.
+- Actual browser interaction verified querying a three-model fixture directory; successful generation probes through all three protocols; advanced timeout and output controls; applying Messages settings; and a completed six-candidate exploration with ten local fixture calls. A truncated response visibly preserved reported usage and recommended increasing output tokens.
+- Shipped JavaScript handler tests exercise all settings fields and protocol switching, draft preservation and secret clearing, structured errors, three-attempt status GET recovery, and resuming the original job without another generation POST.
+- Real HTTP startup checks verify that opening the same installation/version reuses its running service and preserves jobs. Other installations and versions are not reused; upgrades retain the previous app and use a free port.
+
+These checks validate software behavior with scripted local responses. Actual supplier compatibility depends on the configured service, protocol and model; none was exercised with user credentials in this revision. Model-directory access does not establish generation compatibility. Creativity uplift and human superiority remain unmeasured. Packaging, fresh-download and cloud Actions results are recorded separately in the release verification artifact.
+
 ## Version 0.2.0 — settings verification
 
 Validated on Windows with Python 3.13 on 2026-10-06. Version 0.2.0 adds studio model settings, a short connection test and an apply-settings workflow.

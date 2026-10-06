@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from creativity_lab.providers import CallBudget, ChatProvider
-from creativity_lab.web import EXAMPLE, StudioServer, serve_main
+from creativity_lab.web import EXAMPLE, StudioServer, serve_main, _existing_installation
 
 
 @contextmanager
@@ -150,18 +150,18 @@ class SettingsIntegrationTests(unittest.TestCase):
     def test_settings_mutations_require_correct_server_token(self):
         with upstream_stub() as (endpoint, upstream), patch.dict(os.environ, environment(endpoint), clear=True), studio_server() as server:
             initial = self.config(server)
-            for path, data in (("/api/settings", {"model": "new-model"}), ("/api/settings/test", {}), ("/api/settings/reset", {})):
+            for path, data in (("/api/settings", {"model": "new-model"}), ("/api/settings/test", {}), ("/api/settings/reset", {}), ("/api/settings/models", {})):
                 for token in (None, "wrong-token"):
                     status, body = request(server, "POST", path, data, token)
                     self.assertEqual(status, 403, body.decode())
             self.assertEqual(self.config(server), initial)
             self.assertEqual(upstream["requests"], [])
 
-    def test_probe_is_one_short_real_request_and_does_not_save(self):
+    def test_probe_uses_configured_limit_one_real_request_and_does_not_save(self):
         with upstream_stub() as (endpoint, upstream), patch.dict(os.environ, environment(endpoint), clear=True), studio_server() as server:
             saved = self.save(server, {"model": "saved-model", "api_key": "fake-saved-secret", "token_param": "max_tokens"})
             token = saved["settings_token"]
-            status, body = request(server, "POST", "/api/settings/test", {"model": "probe-model", "api_key": "fake-probe-secret", "token_param": "max_completion_tokens"}, token)
+            status, body = request(server, "POST", "/api/settings/test", {"model": "probe-model", "api_key": "fake-probe-secret", "token_param": "max_completion_tokens", "max_output_tokens": 8192, "timeout": 180}, token)
             self.assertEqual(status, 200, body.decode())
             result = json.loads(body)
             self.assertEqual(result["budget"]["calls"], 1)
@@ -172,7 +172,8 @@ class SettingsIntegrationTests(unittest.TestCase):
             observed = upstream["requests"][0]
             self.assertEqual(observed["body"]["model"], "probe-model")
             self.assertEqual(observed["headers"]["Authorization"], "Bearer fake-probe-secret")
-            self.assertEqual(observed["body"]["max_completion_tokens"], 256)
+            self.assertEqual(observed["body"]["max_completion_tokens"], 8192)
+            self.assertIsInstance(result["elapsed_ms"], int)
             self.assertNotIn("max_tokens", observed["body"])
             self.assertNotIn("fake-probe-secret", body.decode())
             self.assertEqual(self.config(server), saved)
@@ -230,7 +231,11 @@ class SettingsIntegrationTests(unittest.TestCase):
                        {"base_url": "https://user:fake-secret@example.com/v1"}, {"base_url": "https://@example.com/v1"},
                        {"base_url": "https://example.com/v1?api_key=fake-secret"}, {"base_url": "https://example.com/v1#fake-secret"},
                        {"base_url": 3}, {"model": []}, {"model": ""}, {"api_key": True}, {"judge_model": None},
-                       {"token_param": "unknown"}, {"unknown_field": "fake-secret"}, []]
+                       {"token_param": "unknown"}, {"unknown_field": "fake-secret"}, [],
+                       {"protocol": "unknown"}, {"json_mode": "schema"}, {"auth_type": "unknown"},
+                       {"timeout": True}, {"timeout": 301}, {"timeout": 0}, {"max_output_tokens": 255},
+                       {"max_output_tokens": 32769}, {"temperature": True}, {"temperature": float("nan")},
+                       {"temperature": 2.1}, {"temperature": 10 ** 400}, {"protocol": "anthropic", "json_mode": "json_object"}]
             for settings in invalid:
                 for path in ("/api/settings", "/api/settings/test"):
                     with self.subTest(settings=settings, path=path):
@@ -334,6 +339,22 @@ class ProviderSettingsSnapshotTests(unittest.TestCase):
 
 
 class PortFallbackTests(unittest.TestCase):
+    def test_double_click_reuses_same_installation_and_preserves_settings_and_jobs(self):
+        with studio_server() as server:
+            server.jobs["existing-job"] = {"status": "completed", "result": "preserved"}
+            with patch("creativity_lab.web.webbrowser.open") as browser, patch("builtins.print"):
+                serve_main(port=server.server_address[1], open_browser=True)
+            browser.assert_called_once_with(f"http://127.0.0.1:{server.server_address[1]}")
+            self.assertEqual(server.jobs["existing-job"]["result"], "preserved")
+            self.assertGreater(server.socket.fileno(), -1)
+
+    def test_other_installation_or_version_is_never_reused(self):
+        with studio_server() as server:
+            original = server.public_config()
+            for override in ({"installation_id": "another-installation"}, {"version": "older-version"}, {"app": "unrelated-app"}):
+                with patch.object(server, "public_config", return_value={**original, **override}):
+                    self.assertFalse(_existing_installation(server.server_address[1]))
+
     def test_occupied_port_falls_back_opens_new_url_and_preserves_old_app(self):
         occupied = StudioServer(0)
         old_port = occupied.server_address[1]

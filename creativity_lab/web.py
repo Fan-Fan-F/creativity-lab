@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import http.client
 import os
-import re
 import secrets
 import threading
 import time
@@ -19,6 +20,7 @@ from .providers import CallBudget, ChatProvider, DemoProvider, ProviderError
 from .settings import ModelSettings
 
 STATIC_DIR = Path(__file__).parent / "static"
+INSTALLATION_ID = hashlib.sha256(str(STATIC_DIR.resolve()).encode()).hexdigest()[:24]
 EXAMPLE = {
     "task": "为夏季城市里的户外工作者设计一种低成本降温方案。预算每人 100 元以内，无需电池，便于携带；请提出能用小实验验证的方案。",
     "references": ["蒸发能带走热量，但效果受空气湿度影响。", "户外工作者需要移动，方案不能依赖固定空调。"],
@@ -34,10 +36,7 @@ EXAMPLE = {
 def live_ready() -> bool:
     """Use the provider's configuration rules, including keyless loopback models."""
     try:
-        ChatProvider()
-        judge_model = os.getenv("CREATIVITY_JUDGE_MODEL", "").strip()
-        if judge_model:
-            ChatProvider(model=judge_model)
+        ModelSettings.from_environment().providers()
         return True
     except Exception:
         return False
@@ -124,7 +123,8 @@ class StudioServer(ThreadingHTTPServer):
             snapshot = self.settings if self.settings is not None else ModelSettings.from_environment()
             configured = self.settings is not None
         return {**snapshot.public(), "session_configured": configured,
-                "settings_token": self.settings_token, "version": __version__}
+                "settings_token": self.settings_token, "version": __version__,
+                "app": "creativity-lab", "installation_id": INSTALLATION_ID}
 
     def start_job(self, config: RunConfig, demo: bool) -> str | None:
         # Construct providers at acceptance, so a later settings change cannot
@@ -255,7 +255,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         path = urlparse(self.path).path
-        if path not in ("/api/run", "/api/settings", "/api/settings/test", "/api/settings/reset"):
+        if path not in ("/api/run", "/api/settings", "/api/settings/test", "/api/settings/reset", "/api/settings/models"):
             self._json(404, {"error": "接口不存在。"})
             self.close_connection = True
             return
@@ -318,7 +318,8 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._json(200, self.server.public_config())
             return
         try:
-            settings = ModelSettings.from_request(data, self.server.settings_snapshot())
+            settings = ModelSettings.from_request(data, self.server.settings_snapshot(),
+                                                  require_model=path != "/api/settings/models")
         except ValueError as exc:
             self._json(400, {"error": str(exc)})
             return
@@ -328,27 +329,66 @@ class StudioHandler(BaseHTTPRequestHandler):
             self._json(200, self.server.public_config())
             return
         budget = CallBudget(1)
+        started = time.monotonic()
         try:
-            provider, _ = settings.providers(timeout=15)
-            provider.complete({"purpose": "connection_test", "instruction": 'Return only {"ok": true} as JSON.'},
-                              budget, max_output_tokens=256)
+            provider, _ = settings.providers(require_model=path != "/api/settings/models")
+            if path == "/api/settings/models":
+                provider.timeout = min(settings.timeout, 30)
+                models = provider.list_models()
+                self._json(200, {"models": models, "count": len(models), "protocol": settings.protocol,
+                                 "elapsed_ms": round((time.monotonic() - started) * 1000),
+                                 "message": "模型列表已读取（最多 500 个）；请选择模型后测试生成连接。"})
+                return
+            response = provider.complete({"purpose": "connection_test", "instruction": 'Return only {"ok": true} as JSON.'}, budget)
+            if response.get("ok") is not True:
+                raise ProviderError("Unexpected probe JSON", code="invalid_json", connection_ok=True)
         except ProviderError as exc:
-            code = re.match(r"Provider HTTP (\d{3}):", str(exc))
-            if code:
-                status = int(code.group(1))
-                hint = {401: "密钥无效，请检查后重新填写。", 403: "该账号无权使用此模型。",
-                        429: "请求限流或额度不足，请稍后重试。",
-                        400: "请检查模型是否支持 JSON 及所选输出长度参数。"}.get(status, "请检查服务可用性。")
-                message = f"连接测试失败（HTTP {status}）：{hint}"
-            else:
-                message = "连接测试失败，请检查接口地址、服务可用性以及模型的 JSON 支持。"
-            self._json(502, {"error": message, "budget": budget.as_dict()})
+            hints = {"auth_failed": "密钥无效或已过期，请检查鉴权方式和密钥。",
+                     "access_denied": "接口拒绝访问，请检查账号权限及模型授权。",
+                     "endpoint_not_found": "接口或模型不存在，请检查协议、地址和模型名称。列表不受支持时可手填模型。",
+                     "invalid_request": "接口拒绝此参数组合。请检查协议及输出长度参数；兼容接口可试提示词 JSON，温度留空。",
+                     "rate_limited": "接口限流或额度不足，请检查额度并稍后手动重试。",
+                     "provider_unavailable": "模型服务暂时不可用，请稍后手动重试。",
+                     "timeout": "等待模型响应超时。慢响应模型可在高级设置中提高超时，再手动测试。",
+                     "tls_error": "HTTPS 证书验证失败，请检查服务证书及系统时间。",
+                     "dns_error": "无法解析接口域名，请检查地址和网络。",
+                     "connection_failed": "无法连接接口，请检查服务是否运行、地址和网络。",
+                     "redirect_blocked": "接口要求跳转，请直接填写最终接口地址。",
+                     "output_limit": "已收到模型响应，但输出被截断。请提高最大输出 token（推理也可能占用预算）。",
+                     "refused": "已连接模型，但模型拒绝此次请求。",
+                     "invalid_json": "已连接模型，但没有收到要求的 JSON 对象。请检查模型输出能力或切换 JSON 输出方式。",
+                     "invalid_response": "已收到接口响应，但其格式与所选协议不一致。请检查协议和接口地址。",
+                     "incomplete_response": "已收到模型响应，但文本生成未完成。"}
+            message = hints.get(exc.code, "请求未完成，请检查协议、接口和模型设置。")
+            if exc.http_status is not None:
+                message = f"HTTP {exc.http_status}：{message}"
+            self._json(502, {"error": message, "code": exc.code, "retryable": exc.retryable,
+                             "http_status": exc.http_status, "connection_ok": exc.connection_ok,
+                             "elapsed_ms": round((time.monotonic() - started) * 1000),
+                             "budget": budget.as_dict()})
             return
         except Exception:
             self._json(502, {"error": "连接测试未完成，请检查服务可用性。", "budget": budget.as_dict()})
             return
-        self._json(200, {"ok": True, "model": settings.model, "budget": budget.as_dict(),
+        self._json(200, {"ok": True, "model": settings.model, "protocol": settings.protocol,
+                         "elapsed_ms": round((time.monotonic() - started) * 1000), "budget": budget.as_dict(),
                          "message": "生成模型连接成功，已收到 JSON 响应。请点击应用设置。"})
+
+
+def _existing_installation(port: int) -> bool:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+    try:
+        connection.request("GET", "/api/config")
+        response = connection.getresponse()
+        raw = response.read(8193)
+        if response.status != 200 or len(raw) > 8192:
+            return False
+        data = json.loads(raw)
+        return isinstance(data, dict) and data.get("app") == "creativity-lab" and data.get("version") == __version__ and data.get("installation_id") == INSTALLATION_ID
+    except (OSError, ValueError, RecursionError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 def serve_main(port: int = 8765, open_browser: bool = False) -> None:
@@ -360,6 +400,10 @@ def serve_main(port: int = 8765, open_browser: bool = False) -> None:
             server = StudioServer(candidate)
             break
         except OSError:
+            if open_browser and _existing_installation(candidate):
+                webbrowser.open(f"http://127.0.0.1:{candidate}")
+                print("已打开正在运行的 Creativity Lab；沿用其设置与任务。")
+                return
             continue
     if server is None:
         raise RuntimeError("本地端口均被占用，请关闭旧实验室窗口后重试。")

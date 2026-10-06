@@ -8,6 +8,10 @@ let running = false;
 let settingsBusy = false;
 let settingsOpener = null;
 let draftKeyAddress = "";
+let settingsDraftLoaded = false;
+let settingsDraftDirty = false;
+let pendingJobId = null;
+let pendingDemo = true;
 const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 const hasScore = (idea, key) => typeof idea.scores?.[key] === "number" && Number.isFinite(idea.scores[key]);
 const textValue = (value) => Array.isArray(value) ? value.map(textValue).join("\n") : value && typeof value === "object" ? JSON.stringify(value, null, 2) : String(value ?? "尚未提供");
@@ -20,7 +24,16 @@ function element(tag, className, text) {
 async function api(path, options) {
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "本地服务请求失败。");
+  if (!response.ok) {
+    const error = new Error(data.error || "本地服务请求失败。");
+    error.code = typeof data.code === "string" ? data.code : "";
+    error.retryable = typeof data.retryable === "boolean" ? data.retryable : null;
+    error.http_status = Number.isInteger(data.http_status) ? data.http_status : error.code ? null : response.status;
+    error.connection_ok = data.connection_ok === true;
+    error.elapsed_ms = Number.isFinite(data.elapsed_ms) ? data.elapsed_ms : null;
+    error.budget = data.budget && typeof data.budget === "object" ? data.budget : null;
+    throw error;
+  }
   return data;
 }
 function setStatus(message, error = false) {
@@ -42,11 +55,23 @@ function settingsStatus(message, error = false) {
   $("settings-status").textContent = message;
   $("settings-status").classList.toggle("error", error);
 }
+function settingsError(error) {
+  const detail = [error.code ? `错误代码 ${error.code}` : "", error.http_status ? `HTTP ${error.http_status}` : ""].filter(Boolean).join(" · ");
+  const retry = error.connection_ok ? error.code === "output_limit" ? "接口已响应。请提高“最大输出”上限后再手动测试。" : "接口已响应，请检查 JSON 输出方式、输出上限或模型响应格式后再测试。" : error.retryable === true ? "可稍后手动重试，本次不会自动重复请求。" : error.retryable === false ? "请按提示检查协议、地址、密钥或模型权限后，再手动测试。" : "请检查连接和配置后重试。";
+  return [error.message || "请求未完成。", detail, settingsMetrics(error), retry].filter(Boolean).join(" ");
+}
+function settingsMetrics(result) {
+  const elapsed = Number.isFinite(result.elapsed_ms) ? `耗时 ${(result.elapsed_ms / 1000).toFixed(2)} 秒` : "";
+  const budget = result.budget;
+  const usage = budget ? `${budget.calls ?? "未报告"} 次调用 · ${(budget.input_tokens || 0) + (budget.output_tokens || 0)} tokens${budget.usage_complete === false ? "（部分或未报告）" : ""}` : "";
+  return [elapsed, usage].filter(Boolean).join(" · ");
+}
 function updateSettingsControls() {
-  $("model-settings").disabled = running || settingsBusy;
+  $("model-settings").disabled = running || settingsBusy || !!pendingJobId;
   $("model-settings-fields").disabled = settingsBusy;
-  for (const id of ["settings-test", "settings-apply", "settings-reset", "settings-close"]) $(id).disabled = settingsBusy || running;
-  $("run-button").disabled = running || settingsBusy;
+  for (const id of ["settings-models", "settings-test", "settings-apply", "settings-reset", "settings-close"]) $(id).disabled = settingsBusy || running;
+  $("run-button").disabled = running || settingsBusy || !!pendingJobId;
+  $("resume-run").disabled = running || settingsBusy;
 }
 function settingsLoading(value, message) {
   settingsBusy = value;
@@ -54,19 +79,21 @@ function settingsLoading(value, message) {
   updateSettingsControls();
   if (message) settingsStatus(message);
 }
-function normalizeDraftAddress(url) {
+function normalizeDraftAddress(url, protocol = $("settings-protocol").value || "openai_chat") {
   let value = String(url || "").trim().replace(/\/+$/, "");
-  if (value.endsWith("/chat/completions")) value = value.slice(0, -"/chat/completions".length).replace(/\/+$/, "");
+  for (const suffix of ["/chat/completions", "/responses", "/messages", "/models"]) {
+    if (value.endsWith(suffix)) { value = value.slice(0, -suffix.length).replace(/\/+$/, ""); break; }
+  }
   try {
     const parsed = new URL(value);
     // Retain explicit ports and the raw path to match backend URL normalization.
     const parts = value.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)(.*)$/i);
-    if (parts && ["http:", "https:"].includes(parsed.protocol)) return `${parsed.protocol}//${parts[2].toLowerCase()}${parts[3]}`;
+    if (parts && ["http:", "https:"].includes(parsed.protocol)) return `${parsed.protocol}//${parts[2].toLowerCase()}${protocol === "anthropic" && !parts[3] ? "/v1" : parts[3]}`;
   } catch (_) { /* A changed incomplete address also invalidates its draft key. */ }
   return value;
 }
 function keyHint() {
-  const addressChanged = normalizeDraftAddress($("settings-base-url").value) !== normalizeDraftAddress(serverConfig.base_url);
+  const addressChanged = normalizeDraftAddress($("settings-base-url").value) !== normalizeDraftAddress(serverConfig.base_url, serverConfig.protocol || "openai_chat");
   $("settings-api-key").placeholder = serverConfig.key_present && !addressChanged ? "已有密钥；留空沿用" : "粘贴 API 密钥，本机模型可留空";
   $("settings-key-help").textContent = addressChanged ? "更换接口地址后，远程服务需要重新填写密钥；已有密钥不会转发到新地址。" : serverConfig.key_present ? "已有密钥。留空沿用当前密钥，填写新密钥可替换。密钥不会回显或保存在浏览器中。" : "密钥仅保存在本次服务启动中。远程服务需要密钥，本机模型可留空。";
 }
@@ -75,29 +102,73 @@ function draftAddressChanged() {
   if (address !== draftKeyAddress) {
     $("settings-api-key").value = "";
     draftKeyAddress = address;
+    clearModelCatalog();
     settingsStatus("接口地址已改变，已清空未应用的密钥。请为新接口重新填写密钥；本机模型可留空。");
   }
   keyHint();
+  updateRequestPreview();
+}
+function clearModelCatalog() {
+  $("settings-model-options").replaceChildren();
+  $("settings-models-status").textContent = "填写地址和密钥后获取模型列表。只查询列表，不发送生成请求。";
+  $("settings-models-status").classList.toggle("error", false);
+}
+function updateRequestPreview() {
+  const protocol = $("settings-protocol").value;
+  const routes = {openai_chat: "/chat/completions", openai_responses: "/responses", anthropic: "/messages"};
+  const route = routes[protocol] || routes.openai_chat;
+  let address = normalizeDraftAddress($("settings-base-url").value);
+  try {
+    const parsed = new URL(address);
+    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) address = "…";
+  } catch (_) { address = "…"; }
+  $("settings-request-path").textContent = `POST ${address}${route}`;
+  $("settings-protocol-badge").textContent = {openai_chat: "CHAT", openai_responses: "RESPONSES", anthropic: "MESSAGES"}[protocol] || "CHAT";
+}
+function protocolPresentation(resetDefaults = false) {
+  const protocol = $("settings-protocol").value;
+  const anthropic = protocol === "anthropic", chat = protocol === "openai_chat";
+  $("settings-json-strict").disabled = anthropic;
+  $("settings-token-completion").disabled = !chat;
+  $("settings-token-legacy").disabled = !chat;
+  if (resetDefaults) { $("settings-token-param").value = "auto"; $("settings-json-mode").value = anthropic ? "prompt" : "json_object"; }
+  if (anthropic) $("settings-json-mode").value = "prompt";
+  if (!chat) $("settings-token-param").value = "auto";
+  $("settings-compatibility-help").textContent = anthropic ? "Anthropic Messages 使用提示输出 JSON；程序仍会检查响应结构。输出长度按 Messages 协议发送。" : protocol === "openai_responses" ? "Responses 使用独立的请求格式与输出参数。兼容服务不支持 API JSON 时，可改为提示输出 JSON。" : "兼容服务不支持 API JSON 时，可改为提示输出 JSON；较旧的接口可能需要 max_tokens。";
+  const auth = $("settings-auth-type").value;
+  $("settings-auth-help").textContent = auth === "auto" ? `自动鉴权：${anthropic ? "x-api-key" : "Authorization Bearer"}。` : `当前鉴权：${auth === "x_api_key" ? "x-api-key" : "Authorization Bearer"}。`;
+  updateRequestPreview();
 }
 function fillModelSettings() {
   $("settings-base-url").value = serverConfig.base_url || "https://api.openai.com/v1";
   $("settings-model").value = serverConfig.model || "";
   $("settings-judge-model").value = serverConfig.judge_model || "";
-  $("settings-token-param").value = serverConfig.token_param === "max_tokens" ? "max_tokens" : "max_completion_tokens";
+  $("settings-protocol").value = ["openai_chat", "openai_responses", "anthropic"].includes(serverConfig.protocol) ? serverConfig.protocol : "openai_chat";
+  $("settings-json-mode").value = serverConfig.json_mode === "prompt" ? "prompt" : "json_object";
+  $("settings-auth-type").value = ["bearer", "x_api_key"].includes(serverConfig.auth_type) ? serverConfig.auth_type : "auto";
+  $("settings-timeout").value = String(serverConfig.timeout ?? 120);
+  $("settings-max-output").value = String(serverConfig.max_output_tokens ?? 4096);
+  $("settings-temperature").value = serverConfig.temperature === null || serverConfig.temperature === undefined ? "" : String(serverConfig.temperature);
+  $("settings-token-param").value = ["max_tokens", "max_completion_tokens"].includes(serverConfig.token_param) ? serverConfig.token_param : "auto";
   $("settings-api-key").value = "";
   draftKeyAddress = normalizeDraftAddress($("settings-base-url").value);
   keyHint();
+  protocolPresentation();
+  settingsDraftLoaded = true;
+  settingsDraftDirty = false;
+  clearModelCatalog();
 }
 async function openModelSettings() {
   if (running || settingsBusy) return;
   settingsOpener = document.activeElement;
-  fillModelSettings();
+  if (!settingsDraftLoaded) fillModelSettings();
   $("model-dialog").showModal();
   settingsLoading(true, "正在读取当前模型设置…");
   try {
     applyPublicConfig(await api("/api/config"));
-    fillModelSettings();
-    settingsStatus("填写接口和模型后，可以先测试连接，再应用设置。");
+    if (!settingsDraftDirty) fillModelSettings();
+    else { keyHint(); protocolPresentation(); }
+    settingsStatus("选择协议，填写地址和密钥后获取模型；也可以直接填写模型名称。");
   } catch (error) { settingsStatus("无法读取本地服务配置，请确认实验室仍在运行。", true); }
   finally { settingsLoading(false); $("settings-base-url").focus(); }
 }
@@ -107,7 +178,40 @@ function settingsPayload() {
     base_url: $("settings-base-url").value.trim(), model: $("settings-model").value.trim(),
     api_key: $("settings-api-key").value.trim(), judge_model: $("settings-judge-model").value.trim(),
     token_param: $("settings-token-param").value,
+    protocol: $("settings-protocol").value, json_mode: $("settings-json-mode").value,
+    auth_type: $("settings-auth-type").value, timeout: Number($("settings-timeout").value),
+    max_output_tokens: Number($("settings-max-output").value),
+    temperature: $("settings-temperature").value.trim() === "" ? null : Number($("settings-temperature").value),
   };
+}
+async function fetchModels() {
+  if (running || settingsBusy) return;
+  if (!$("settings-base-url").reportValidity()) return;
+  if (!serverConfig.settings_token) { settingsStatus("设置连接尚未就绪，请重新打开设置。", true); return; }
+  const payload = settingsPayload();
+  settingsLoading(true, "正在查询模型列表，不发送生成请求…");
+  try {
+    const result = await api("/api/settings/models", {method: "POST", headers: {"Content-Type": "application/json", "X-Settings-Token": serverConfig.settings_token}, body: JSON.stringify(payload)});
+    const catalog = $("settings-model-options");
+    catalog.replaceChildren();
+    const seen = new Set();
+    if (!Array.isArray(result.models)) throw new Error("接口返回的模型列表格式无效，可以手动填写模型名称。");
+    for (const model of result.models) {
+      if (typeof model.id !== "string" || seen.has(model.id)) continue;
+      seen.add(model.id);
+      const option = element("option", "", model.name || model.id);
+      option.value = model.id;
+      option.label = model.name || model.id;
+      catalog.append(option);
+    }
+    $("settings-models-status").textContent = seen.size ? `已获取 ${seen.size} 个模型${Number.isFinite(result.elapsed_ms) ? ` · ${(result.elapsed_ms / 1000).toFixed(2)} 秒` : ""}。输入名称筛选，或继续手动填写；评审模型使用同一列表。` : "接口返回的列表为空，可以手动填写模型名称。";
+    $("settings-models-status").classList.toggle("error", false);
+    settingsStatus("模型列表已更新，当前填写的模型保持不变。选择后可以测试连接。");
+  } catch (error) {
+    $("settings-models-status").textContent = settingsError(error);
+    $("settings-models-status").classList.toggle("error", true);
+    settingsStatus("模型列表未更新。可以修正接口后手动重查，或填写已知模型名称。", true);
+  } finally { settingsLoading(false); }
 }
 async function submitSettings(action) {
   if (running || settingsBusy) return;
@@ -119,11 +223,12 @@ async function submitSettings(action) {
   try {
     const result = await api(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Settings-Token": serverConfig.settings_token}, body: JSON.stringify(payload)});
     if (action === "test") {
-      settingsStatus((result.message || `连接测试成功，模型：${result.model || payload.model}。`) + " 设置尚未应用。");
+      settingsStatus([(result.message || `连接测试成功，模型：${result.model || payload.model}。`), settingsMetrics(result), "设置尚未应用。"].filter(Boolean).join(" "));
     } else {
       applyPublicConfig(result);
       $("settings-api-key").value = "";
       if (action === "apply") {
+        fillModelSettings();
         $("live-provider").checked = true;
         modeChanged();
         $("model-dialog").close();
@@ -135,7 +240,7 @@ async function submitSettings(action) {
         settingsStatus("已恢复启动时的配置。你也可以重新填写接口。");
       }
     }
-  } catch (error) { settingsStatus(error.message || "模型设置请求失败，请检查接口配置后重试。", true); }
+  } catch (error) { settingsStatus(settingsError(error), true); }
   finally { settingsLoading(false); if (!$("model-dialog").open && settingsOpener?.focus) settingsOpener.focus(); }
 }
 async function fillExample() {
@@ -158,7 +263,7 @@ function busy(value) {
 }
 async function run(event) {
   event.preventDefault();
-  if (running || settingsBusy) return;
+  if (running || settingsBusy || pendingJobId) return;
   const demo = selectedDemo();
   if (!demo && !serverConfig.live_ready) {
     setStatus("点击右上角“设置”填写模型接口，即可开始真实模型探索。", true);
@@ -174,13 +279,37 @@ async function run(event) {
   setStatus(demo ? "正在演示探索流程…" : "已开始真实模型探索；请保持页面打开。一次运行可能需要数分钟。");
   try {
     const job = await api("/api/run", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(data)});
+    pendingJobId = job.job_id;
+    pendingDemo = demo;
+    await pollPendingRun();
+  } catch (error) {
+    setStatus(error.message || "运行未启动，请检查本地服务。", true);
+  } finally { busy(false); }
+}
+async function jobStatusWithRetry(jobId) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await api(`/api/jobs/${encodeURIComponent(jobId)}`); }
+    catch (error) {
+      const permanent = error.http_status >= 400 && error.http_status < 500 && error.http_status !== 429;
+      if (attempt === 2 || permanent) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+    }
+  }
+}
+async function pollPendingRun() {
+  if (!pendingJobId) return;
+  const jobId = pendingJobId;
+  busy(true);
+  $("resume-run-wrapper").hidden = true;
+  try {
     let elapsed = 0;
     while (true) {
-      const state = await api(`/api/jobs/${encodeURIComponent(job.job_id)}`);
-      if (state.status === "failed") throw new Error(state.error || "运行未完成。");
+      const state = await jobStatusWithRetry(jobId);
+      if (state.status === "failed") { pendingJobId = null; throw new Error(state.error || "运行未完成。"); }
       if (state.status === "completed") {
         currentRun = state.result;
-        currentJobId = job.job_id;
+        currentJobId = jobId;
+        pendingJobId = null;
         selectedIdea = null;
         render();
         const partial = currentRun.status && currentRun.status !== "complete";
@@ -188,12 +317,13 @@ async function run(event) {
         break;
       }
       elapsed += 1;
-      $("loading-copy").textContent = demo ? "正在整理演示候选与档案。" : `生成候选并审查假设。已等待约 ${elapsed} 秒，真实模型运行可能需要数分钟。`;
+      $("loading-copy").textContent = pendingDemo ? "正在整理演示候选与档案。" : `生成候选并审查假设。已等待约 ${elapsed} 次状态查询，真实模型运行可能需要数分钟。`;
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   } catch (error) {
-    setStatus(error.message || "运行中断。请检查本地服务是否仍在运行。", true);
-  } finally { busy(false); }
+    if (error.http_status === 404) pendingJobId = null;
+    setStatus(pendingJobId ? "状态查询暂时中断，已保留任务编号。任务可能仍在执行；请恢复查询，不会重新发送生成请求。" : error.message || "运行未完成。", true);
+  } finally { busy(false); $("resume-run-wrapper").hidden = !pendingJobId; }
 }
 function archivedIds() {
   return new Set((currentRun.archive || []).map((cell) => typeof cell === "string" ? cell : cell.idea_id));
@@ -325,8 +455,13 @@ $("sort-ideas").addEventListener("change", () => currentRun && renderIdeas());
 $("export-json").addEventListener("click", () => downloadAttachment("json"));
 $("export-md").addEventListener("click", () => downloadAttachment("md"));
 $("model-settings").addEventListener("click", openModelSettings);
-$("settings-base-url").addEventListener("input", draftAddressChanged);
-$("settings-api-key").addEventListener("input", () => { draftKeyAddress = normalizeDraftAddress($("settings-base-url").value); });
+$("settings-base-url").addEventListener("input", () => { settingsDraftDirty = true; draftAddressChanged(); });
+$("settings-api-key").addEventListener("input", () => { settingsDraftDirty = true; draftKeyAddress = normalizeDraftAddress($("settings-base-url").value); clearModelCatalog(); });
+for (const id of ["settings-model", "settings-judge-model", "settings-protocol", "settings-json-mode", "settings-auth-type", "settings-timeout", "settings-max-output", "settings-temperature", "settings-token-param"]) $(id).addEventListener("input", () => { settingsDraftDirty = true; });
+$("settings-protocol").addEventListener("change", () => { settingsDraftDirty = true; protocolPresentation(true); draftAddressChanged(); clearModelCatalog(); });
+$("settings-auth-type").addEventListener("change", () => { protocolPresentation(); clearModelCatalog(); });
+$("settings-models").addEventListener("click", fetchModels);
+$("resume-run").addEventListener("click", () => { if (!running && !settingsBusy && pendingJobId) return pollPendingRun(); });
 $("settings-test").addEventListener("click", () => submitSettings("test"));
 $("settings-reset").addEventListener("click", () => submitSettings("reset"));
 $("model-settings-form").addEventListener("submit", (event) => { event.preventDefault(); submitSettings("apply"); });

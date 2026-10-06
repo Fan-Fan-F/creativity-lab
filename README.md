@@ -1,19 +1,18 @@
 # Creativity Lab · 创造力实验室
 
-**把一次回答，变成有分支、有批评、有证据的想法搜索。** 面向科研构思、产品创新与写作设计，支持任意提供 JSON Chat Completions 的模型接口。Python 3.10+，运行时零第三方依赖，MIT 开源。
+**把一次回答，变成有分支、有批评、有证据的想法搜索。** 面向科研构思、产品创新与写作设计，支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 协议的文本 JSON 模型接口。Python 3.10+，运行时零第三方依赖，MIT 开源。
 
 这一版实现提升创造力的搜索机制和评测工具。**尚未测得真实模型的提升幅度，也没有证据证明本项目超越人类。** 网页默认使用明确标记的预置演示；真实模式需要你自己的模型接口。
 
 ## 先用起来
 
-下载并解压仓库，Windows 双击 **launch.bat** 打开本地网页。0.2.0 可以直接在网页接入模型：
+下载并解压仓库，Windows 双击 **launch.bat** 打开本地网页。0.3.0 可以直接在网页选择协议、查询模型并检查连接：
 
-1. 点击右上角 **设置**，填入 OpenAI 兼容接口地址、模型名称与 API 密钥。接口地址通常以 `/v1` 结尾，例如 `https://api.openai.com/v1`，无需附加 `/chat/completions`。
-2. 点击 **测试连接**，确认接口能返回所需 JSON。测试会发送一个短模型请求，可能产生调用费用；测试本身不是创造力评测。
-3. 点击 **应用设置**，再切换到 **真实模型**。需要时可在设置中填写评审模型，并选择 `max_completion_tokens` 或 `max_tokens` 参数。
-4. 输入希望解决的问题和约束，点击 **开始探索**。查看方案、机制差异、关键假设、失败风险、最小验证方法与候选档案；可导出 JSON 和 Markdown。
+1. 点击右上角 **设置**，选择服务商支持的协议，填接口根地址和 API 密钥。点击 **获取模型**，从列表选择生成模型，也可以直接手填名称；评审模型留空时使用生成模型。查询使用当前草稿，只读列表，不保存设置或发送生成请求。
+2. 点击 **测试连接**，检查所选模型能否按该协议返回 JSON。测试只发一次短生成请求，可能产生费用，不会自动重试或保存。若提示参数不兼容，可展开 **调用与兼容性** 调整 JSON 方式、超时和输出长度。
+3. 点击 **应用设置**，输入问题和约束，点击 **开始探索**。查看方案、机制差异、关键假设、失败风险、最小验证方法与候选档案；可导出 JSON 和 Markdown。
 
-也可以直接使用预置演示了解流程。macOS/Linux 可从终端运行 `python3 -m creativity_lab serve --open`。
+也可以直接使用预置演示了解流程。macOS/Linux 可从终端运行 `python3 -m creativity_lab serve --open`。再次启动时，同一安装路径、同一版本的服务会直接打开，沿用当前设置与任务；升级后会保留旧服务，并为新版选择空闲端口。完整接入步骤和错误处理见 [模型设置指南](docs/model-settings.zh-CN.md)。
 
 电脑需要已有 Python 3.10 或更高版本；启动器会检测，缺少时会说明原因，不会自动安装。演示无需账号或网络。真实模型模式需要联网，任务和提供的参考资料会发送给你配置的模型服务。
 
@@ -48,7 +47,7 @@
 
 网页 **模型设置** 是日常接入入口。如果由你的 AI 助手操作，把 [Agent 使用指南](docs/agent-guide.md)交给它，再用自然语言说出目标即可。
 
-设置默认只保存在当前本地服务进程的内存中，不写入磁盘。API 密钥不会通过 GET 配置接口回传，也不会进入运行结果或导出文件。关闭并重启服务后，网页临时设置失效：服务会恢复启动时的环境变量配置，没有环境配置时需要重新填写。网页设置仅影响当前网页服务，不会自动配置另一个终端里的 CLI 进程。
+设置只保存在当前本地服务进程的内存中，不写入磁盘或浏览器存储。API 密钥不会通过 GET 配置接口回传，也不会进入运行结果或导出文件。关闭服务后，网页填写的设置随进程结束；下次启动会使用环境变量配置，没有环境配置时需要重新填写。关闭设置弹窗会清空尚未应用的密钥输入，其他草稿保留。网页设置仅影响当前网页服务，不会自动配置另一个终端里的 CLI 进程。
 
 CLI 与已有自动化仍支持环境变量。开发者可在 PowerShell 启动进程前设置：
 
@@ -59,12 +58,28 @@ $env:CREATIVITY_MODEL = '服务商提供的模型名称'
 # $env:CREATIVITY_BASE_URL = 'https://服务商/v1'
 # 可选：使用不同模型进行筛选
 # $env:CREATIVITY_JUDGE_MODEL = '评审模型名称'
-# 可选：部分兼容服务使用此参数
+# 可选：按服务商实际协议选择；默认 openai_chat
+# $env:CREATIVITY_PROTOCOL = 'openai_responses'
+# 可选：兼容服务不接受接口 JSON 模式时使用提示词
+# $env:CREATIVITY_JSON_MODE = 'prompt'
+# 可选：默认 auto，按协议选择 Bearer 或 x-api-key
+# $env:CREATIVITY_AUTH_TYPE = 'auto'
+# 可选：Chat 的较旧兼容服务使用此参数
 # $env:CREATIVITY_TOKEN_PARAM = 'max_tokens'
+# 可选：请求 socket 超时与输出上限
+# $env:CREATIVITY_TIMEOUT = '120'
+# $env:CREATIVITY_MAX_OUTPUT_TOKENS = '4096'
+# 可选：CREATIVITY_TEMPERATURE；不设置时使用模型默认
 python -m creativity_lab serve --open
 ```
 
-兼容服务需支持 `/chat/completions`、`response_format: json_object` 和文本 JSON 输出。评审模型使用同一接口地址与密钥；留空时使用生成模型。部分服务需要选择 `max_tokens`，默认是 `max_completion_tokens`。OpenAI 接口依据 [官方 Chat Completions 文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。支持无密钥的 loopback 本地兼容模型；远程接口要求 HTTPS。没有隐藏重试，失败请求也计入调用上限。中途失败会保留已生成候选与用量，明确标为未完成。
+选择 Chat Completions 时使用 `/chat/completions`；Responses 使用 `/responses`；Anthropic 使用 `/messages`，裸域名会补 `/v1`，自定义路径前缀保留。网页会去掉误粘贴的 `/chat/completions`、`/responses`、`/messages` 或 `/models` 末尾，避免重复追加路由。协议决定请求和响应格式，模型名称相同也不能代替协议选择。
+
+OpenAI 两种协议可选择接口 `json_object` 模式或提示词 JSON；Anthropic 在本版本使用提示词 JSON。两种方式都会校验返回对象。输出上限默认 4096，可设置 256–32768；Temperature 留空使用模型默认，避免发送模型不支持的参数。请求超时默认 120 秒，网页可设 5–300 秒，作用于网络 socket 操作，不是整个探索任务的总时限。评审模型使用同一接口、密钥与调用设置。模型列表仅说明接口提供了名称，不能证明每个模型都支持本程序的 JSON 生成。
+
+支持无密钥的 loopback 本地兼容模型；远程接口要求 HTTPS。模型调用没有隐藏重试，失败也计入调用上限。中途失败会保留已生成候选与用量，标为未完成。网页状态查询短暂中断时，会保留任务编号并提供 **恢复查询**，继续读取原任务，不会重新发送生成任务。更多协议差异、404/400 与截断处理见 [模型设置指南](docs/model-settings.zh-CN.md)。
+
+这一版模型设置参考了官方 [DeepSeek Harness Models 页面](https://github.com/deepseek-ai/deepseek-harness/blob/5badb15009ae1756c3afe0ae0cef1faafc290ccc/packages/client/ui-settings-models/README.zh.md)的协议选择、草稿探测与模型发现设计，代码独立实现。请求格式依据 [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)、[Responses](https://developers.openai.com/api/reference/cli/resources/responses/methods/create) 与 [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create) 官方文档。
 
 ## 复现实验
 
@@ -93,4 +108,4 @@ python -m creativity_lab attach-evidence runs/demo.json runs/evidence-template.j
 
 下一步应优先完成真实模型多任务盲评，再考虑语义嵌入查新、可信自动实验适配器、多模型集成和按档案改善自适应分配预算。它们尚未实现。声称“在指定任务上超越人类”之前，需要预先确定人类组、资源预算、评价指标、样本规模和独立验证方式。
 
-当前版本 **0.2.0**。版本与边界见 [CHANGELOG](CHANGELOG.md)，当前与历史验证状态见 [validation.md](docs/validation.md)，系统细节见 [architecture.md](docs/architecture.md)。
+当前版本 **0.3.0**。版本与边界见 [CHANGELOG](CHANGELOG.md)，当前与历史验证状态见 [validation.md](docs/validation.md)，系统细节见 [architecture.md](docs/architecture.md)。

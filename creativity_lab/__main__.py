@@ -7,6 +7,7 @@ import sys
 from . import __version__
 from .engine import Engine, RunConfig
 from .providers import ChatProvider, DemoProvider, ProviderError
+from .settings import ModelSettings
 
 
 def read_json(path):
@@ -24,12 +25,12 @@ def write_json(path, data):
 
 
 def provider_factory(demo):
-    return DemoProvider if demo else ChatProvider
+    return DemoProvider if demo else lambda: ModelSettings.from_environment().providers()[0]
 
 
 def judge_factory(demo):
     model = os.getenv("CREATIVITY_JUDGE_MODEL")
-    return DemoProvider if demo else (lambda: ChatProvider(model=model)) if model else None
+    return DemoProvider if demo else (lambda: ModelSettings.from_environment().providers()[1]) if model else None
 
 
 def main(argv=None):

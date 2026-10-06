@@ -31,6 +31,7 @@
           <details class="settings"><summary>实验参数 <span>预算与搜索深度</span></summary><div class="settings-grid"><label for="rounds">探索轮数<input id="rounds" type="number" value="2" min="1" max="8" required></label><label for="candidates">每轮候选<input id="candidates" type="number" value="4" min="2" max="12" required></label><label for="max-calls">调用上限<input id="max-calls" type="number" value="30" min="1" max="200" required></label><label for="seed">随机种子<input id="seed" type="number" value="42" min="0" max="2147483647" required></label></div><label for="search-mode">搜索策略<select id="search-mode"><option value="lab">实验室 · 变换、批评、档案反馈</option><option value="baseline">基线 · 直接重复生成</option></select></label><p class="setting-help">同一任务分别运行两种策略，可导出结果开展盲评。调用上限控制 API 请求次数，费用取决于模型和文本长度。</p></details>
           <button id="run-button" class="primary-button" type="submit"><span>开始探索</span><span aria-hidden="true">→</span></button>
           <p id="run-status" class="run-status" role="status" aria-live="polite">结果仅保存在当前服务内存中，请及时导出。</p>
+          <div id="resume-run-wrapper" class="resume-run" hidden><button id="resume-run" type="button">恢复状态查询 ↻</button><p>只查询已启动的任务，不重新发送生成请求。</p></div>
         </form>
       </aside>
       <section class="results" aria-label="探索结果">
@@ -52,23 +53,33 @@
   <footer><span>Creativity Lab</span><span>想法可以大胆，证据要具体。</span></footer>
   <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-dialog-title" aria-describedby="model-dialog-description">
     <form id="model-settings-form" autocomplete="off">
-      <div class="model-dialog-header"><div><p class="eyebrow">MODEL CONNECTION</p><h2 id="model-dialog-title">连接你的模型</h2></div><button id="settings-close" class="dialog-close" type="button" aria-label="关闭模型设置">×</button></div>
-      <p id="model-dialog-description" class="model-dialog-description">在这里填写接口即可使用真实模型。设置仅保存在本次服务启动的内存中；关闭服务后需重新填写。密钥不保存在浏览器中。</p>
-      <fieldset id="model-settings-fields" class="model-settings-fields">
-        <label for="settings-base-url">接口地址</label>
-        <input id="settings-base-url" class="settings-input" type="url" placeholder="https://api.openai.com/v1" maxlength="2048" autocomplete="off" spellcheck="false" required aria-describedby="settings-url-help">
-        <p id="settings-url-help" class="settings-field-help">填写兼容 Chat Completions 的接口根地址，通常以 /v1 结尾。本机接口可以使用 http。</p>
-        <label for="settings-model">模型名称</label>
-        <input id="settings-model" class="settings-input" type="text" placeholder="填写服务商提供的模型名称" maxlength="200" autocomplete="off" spellcheck="false" required>
-        <label for="settings-api-key">API 密钥 <span class="optional">本机模型可留空</span></label>
-        <input id="settings-api-key" class="settings-input" type="password" placeholder="粘贴 API 密钥" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="settings-key-help">
-        <p id="settings-key-help" class="settings-field-help">密钥只发送给本地服务，再由本地服务用于模型请求。</p>
-        <details class="model-advanced"><summary>高级设置 <span>评审模型与接口兼容性</span></summary><label for="settings-judge-model">评审模型 <span class="optional">选填 · 留空使用同一模型</span></label><input id="settings-judge-model" class="settings-input" type="text" placeholder="另一评审模型的名称" maxlength="200" autocomplete="off" spellcheck="false"><label for="settings-token-param">输出长度参数</label><select id="settings-token-param" class="settings-input"><option value="max_completion_tokens">max_completion_tokens</option><option value="max_tokens">max_tokens</option></select><p class="settings-field-help">按接口支持的参数选择；较旧的兼容接口可能需要 max_tokens。</p></details>
-      </fieldset>
-      <p class="model-test-note">测试连接会向填写的地址发送一个简短请求，可能产生少量费用；测试不会应用设置。</p>
-      <p id="settings-status" class="settings-status" role="status" aria-live="polite"></p>
-      <div class="model-dialog-actions"><button id="settings-test" class="model-test-button" type="button">测试连接</button><button id="settings-apply" class="primary-button model-apply-button" type="submit"><span>应用设置</span><span aria-hidden="true">→</span></button></div>
-      <div class="model-dialog-bottom"><span id="settings-session-note">仅本次启动有效</span><button id="settings-reset" class="text-button" type="button">恢复启动配置</button></div>
+      <div class="model-dialog-header"><div><p class="eyebrow">MODEL CONNECTION · 0.3</p><h2 id="model-dialog-title">模型连接</h2><p class="dialog-subtitle">选择协议，发现模型，检查连接。</p></div><button id="settings-close" class="dialog-close" type="button" aria-label="关闭模型设置">×</button></div>
+      <div class="model-dialog-scroll">
+        <p id="model-dialog-description" class="model-dialog-description">设置仅保存在本次服务启动的内存中。关闭服务后需重新填写，密钥不会保存到浏览器。关闭此窗口会清空未应用的密钥，其他草稿保留。</p>
+        <fieldset id="model-settings-fields" class="model-settings-fields">
+          <section class="connection-group"><div class="connection-group-heading"><span>01</span><h3>接口与协议</h3></div>
+            <label for="settings-protocol">接口协议</label><select id="settings-protocol" class="settings-input"><option value="openai_chat">OpenAI · Chat Completions</option><option value="openai_responses">OpenAI · Responses</option><option value="anthropic">Anthropic · Messages</option></select>
+            <label for="settings-base-url">接口根地址</label><input id="settings-base-url" class="settings-input" type="url" placeholder="https://api.openai.com/v1" maxlength="2048" autocomplete="off" spellcheck="false" required aria-describedby="settings-url-help settings-request-path">
+            <p id="settings-url-help" class="settings-field-help">填写服务商提供的根地址，通常以 /v1 结尾。本机接口可以使用 http。</p>
+            <div class="request-preview"><span id="settings-protocol-badge">CHAT</span><code id="settings-request-path">POST …/chat/completions</code></div>
+            <label for="settings-api-key">API 密钥 <span class="optional">本机模型可留空</span></label><input id="settings-api-key" class="settings-input" type="password" placeholder="粘贴 API 密钥" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="settings-key-help"><p id="settings-key-help" class="settings-field-help">密钥只发送给本地服务，再由本地服务用于模型请求。</p>
+          </section>
+          <section class="connection-group models-group"><div class="connection-group-heading"><span>02</span><h3>选择模型</h3><button id="settings-models" class="discover-models-button" type="button">获取模型 ↻</button></div>
+            <label for="settings-model">生成模型</label><input id="settings-model" class="settings-input" type="text" list="settings-model-options" placeholder="获取列表后输入筛选，或手动填写模型名称" maxlength="200" autocomplete="off" spellcheck="false" required aria-describedby="settings-models-status"><datalist id="settings-model-options"></datalist>
+            <p id="settings-models-status" class="settings-field-help model-list-status" role="status" aria-live="polite">填写地址和密钥后获取模型列表。只查询列表，不发送生成请求。</p>
+            <label for="settings-judge-model">评审模型 <span class="optional">选填 · 留空使用生成模型</span></label><input id="settings-judge-model" class="settings-input" type="text" list="settings-model-options" placeholder="从同一列表选择，也可以手动填写" maxlength="200" autocomplete="off" spellcheck="false">
+          </section>
+          <details class="model-advanced"><summary>调用与兼容性 <span>超时 · 输出 · 鉴权</span></summary><div class="settings-advanced-grid">
+            <div><label for="settings-json-mode">JSON 输出</label><select id="settings-json-mode" class="settings-input"><option id="settings-json-strict" value="json_object">API JSON 模式</option><option value="prompt">提示模型输出 JSON</option></select></div>
+            <div><label for="settings-auth-type">鉴权方式</label><select id="settings-auth-type" class="settings-input"><option value="auto">按协议自动选择</option><option value="bearer">Authorization · Bearer</option><option value="x_api_key">x-api-key</option></select></div>
+            <div><label for="settings-timeout">请求超时 <span class="optional">秒</span></label><input id="settings-timeout" class="settings-input" type="number" value="120" min="5" max="300" step="1" required></div>
+            <div><label for="settings-max-output">最大输出 <span class="optional">tokens</span></label><input id="settings-max-output" class="settings-input" type="number" value="4096" min="256" max="32768" step="1" required></div>
+            <div><label for="settings-temperature">Temperature <span class="optional">选填</span></label><input id="settings-temperature" class="settings-input" type="number" min="0" max="2" step="0.01" placeholder="留空使用模型默认"></div>
+            <div><label for="settings-token-param">输出长度参数</label><select id="settings-token-param" class="settings-input"><option value="auto">按协议自动选择</option><option id="settings-token-completion" value="max_completion_tokens">max_completion_tokens</option><option id="settings-token-legacy" value="max_tokens">max_tokens</option></select></div>
+          </div><p id="settings-compatibility-help" class="settings-field-help compatibility-help">默认设置适合标准接口。兼容服务不支持 API JSON 时，可选择提示输出 JSON。</p><p id="settings-auth-help" class="settings-field-help">自动鉴权：Authorization Bearer。</p></details>
+        </fieldset>
+      </div>
+      <div class="model-dialog-footer"><p id="settings-status" class="settings-status" role="status" aria-live="polite">先获取模型，再测试连接。</p><p class="model-test-note">测试会发送一个短生成请求，可能产生少量费用；不会自动重试或应用设置。</p><div class="model-dialog-actions"><button id="settings-test" class="model-test-button" type="button">测试连接</button><button id="settings-apply" class="primary-button model-apply-button" type="submit"><span>应用设置</span><span aria-hidden="true">→</span></button></div><div class="model-dialog-bottom"><span id="settings-session-note">仅本次启动有效</span><button id="settings-reset" class="text-button" type="button">恢复启动配置</button></div></div>
     </form>
   </dialog>
 </body>

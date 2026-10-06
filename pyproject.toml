@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "creativity-lab"
-version = "0.2.0"
+version = "0.3.0"
 description = "Diversity-preserving idea search with evidence-aware evaluation"
 readme = "README.md"
 requires-python = ">=3.10"
