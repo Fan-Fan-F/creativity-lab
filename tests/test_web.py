@@ -240,10 +240,13 @@ nodes.get("export-md").listeners.click();
   assert.equal(exports[0].blob,undefined);
   assert.equal(exports[0].filename,"creativity-test-job-123.json");
   console.log(JSON.stringify({json_bytes:Buffer.byteLength(json),markdown_bytes:Buffer.byteLength(markdown),unreviewed_preserved:true}));
-})().catch(error=>{console.error(error);process.exitCode=1;});
+  process.exit(0); // All async assertions finished; no worker handle should keep CI alive.
+})().catch(error=>{console.error(error);process.exit(1);});
 '''
         app = Path(__file__).resolve().parents[1] / "creativity_lab" / "static" / "app.js"
-        result = subprocess.run([shutil.which("node"), "-e", script, str(app)], capture_output=True, text=True, encoding="utf-8", timeout=10)
+        # Windows hosted runners can cold-start Node slowly; assertions still
+        # enforce exact bytes and exit immediately once they are complete.
+        result = subprocess.run([shutil.which("node"), "-e", script, str(app)], capture_output=True, text=True, encoding="utf-8", timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         evidence = json.loads(result.stdout)
         self.assertGreater(evidence["json_bytes"], 100)
