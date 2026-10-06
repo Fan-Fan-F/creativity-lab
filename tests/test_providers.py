@@ -27,7 +27,7 @@ def local_server():
                 self.send_header("Location", state["redirect"])
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps(state["body"]).encode("utf-8"))
+            self.wfile.write(state.get("raw_body", json.dumps(state["body"]).encode("utf-8")))
 
         def do_GET(self):
             state["requests"].append({"path": self.path, "headers": dict(self.headers)})
@@ -79,6 +79,17 @@ class ParserAndBudgetTests(unittest.TestCase):
 
 
 class HTTPBoundaryTests(unittest.TestCase):
+    def test_deeply_nested_upstream_json_is_a_controlled_provider_error(self):
+        with local_server() as (endpoint, state):
+            state["raw_body"] = b"[" * 10000 + b"0" + b"]" * 10000
+            provider = ChatProvider(model="test-model", base_url=endpoint, api_key="fake-key-only", timeout=3)
+            budget = CallBudget(1)
+            with self.assertRaises(ProviderError) as error:
+                provider.complete({"purpose": "test"}, budget)
+            self.assertNotIn("fake-key-only", str(error.exception))
+            self.assertEqual(budget.calls, 1)
+            self.assertFalse(budget.usage_complete)
+
     def test_real_http_request_json_response_and_reported_usage(self):
         with local_server() as (endpoint, state), patch.dict(os.environ,
                 {"CREATIVITY_TOKEN_PARAM": "max_completion_tokens"}):

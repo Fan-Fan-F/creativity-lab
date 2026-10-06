@@ -1,8 +1,10 @@
-"""Loopback-only, dependency-free web studio. Never accepts credentials in requests."""
+"""Loopback-only web studio with ephemeral settings and sanitized results."""
 from __future__ import annotations
 
 import json
 import os
+import re
+import secrets
 import threading
 import time
 import uuid
@@ -12,7 +14,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .engine import Engine, RunConfig
-from .providers import ChatProvider, DemoProvider
+from . import __version__
+from .providers import CallBudget, ChatProvider, DemoProvider, ProviderError
+from .settings import ModelSettings
 
 STATIC_DIR = Path(__file__).parent / "static"
 EXAMPLE = {
@@ -71,7 +75,7 @@ def validate_request(data: object) -> tuple[RunConfig, bool]:
         raise ValueError("请求必须是 JSON 对象。")
     allowed = {"task", "rounds", "candidates_per_round", "seed", "max_calls", "references", "mode", "demo"}
     if set(data) - allowed:
-        raise ValueError("请求含不支持的字段。API 配置请通过服务器环境变量设置。")
+        raise ValueError("请求含不支持的字段。请通过模型设置配置接口。")
     task = data.get("task", "")
     if not isinstance(task, str) or not 8 <= len(task.strip()) <= 12000:
         raise ValueError("请用 8 至 12000 个字符描述目标和限制。")
@@ -101,13 +105,31 @@ def validate_request(data: object) -> tuple[RunConfig, bool]:
 class StudioServer(ThreadingHTTPServer):
     """Jobs are ephemeral; prompts and credentials never enter access logs."""
     daemon_threads = True
+    allow_reuse_address = False  # Windows must not share a live app's listening port.
 
     def __init__(self, port: int = 8765):
         super().__init__(("127.0.0.1", port), StudioHandler)
         self.jobs: dict[str, dict] = {}
         self.job_lock = threading.Lock()
+        self.settings_lock = threading.Lock()
+        self.settings: ModelSettings | None = None
+        self.settings_token = secrets.token_urlsafe(32)
+
+    def settings_snapshot(self) -> ModelSettings:
+        with self.settings_lock:
+            return self.settings if self.settings is not None else ModelSettings.from_environment()
+
+    def public_config(self) -> dict:
+        with self.settings_lock:
+            snapshot = self.settings if self.settings is not None else ModelSettings.from_environment()
+            configured = self.settings is not None
+        return {**snapshot.public(), "session_configured": configured,
+                "settings_token": self.settings_token, "version": __version__}
 
     def start_job(self, config: RunConfig, demo: bool) -> str | None:
+        # Construct providers at acceptance, so a later settings change cannot
+        # redirect an in-flight run or send its key to a different endpoint.
+        provider, judge = (DemoProvider(), None) if demo else self.settings_snapshot().providers()
         with self.job_lock:
             if any(j["status"] in ("queued", "running") for j in self.jobs.values()):
                 return None
@@ -115,16 +137,13 @@ class StudioServer(ThreadingHTTPServer):
                 self.jobs.pop(next(iter(self.jobs)))
             job_id = uuid.uuid4().hex
             self.jobs[job_id] = {"job_id": job_id, "status": "queued", "created_at": time.time()}
-        threading.Thread(target=self._run_job, args=(job_id, config, demo), daemon=True).start()
+        threading.Thread(target=self._run_job, args=(job_id, config, provider, judge), daemon=True).start()
         return job_id
 
-    def _run_job(self, job_id: str, config: RunConfig, demo: bool) -> None:
+    def _run_job(self, job_id: str, config: RunConfig, provider, judge) -> None:
         with self.job_lock:
             self.jobs[job_id]["status"] = "running"
         try:
-            provider = DemoProvider() if demo else ChatProvider()
-            judge_model = os.getenv("CREATIVITY_JUDGE_MODEL", "").strip()
-            judge = ChatProvider(model=judge_model) if not demo and judge_model else None
             result = Engine(provider, judge=judge).run(config)
             # Serialize here so a provider result cannot leave an endlessly running job.
             json.dumps(result, ensure_ascii=False, allow_nan=False)
@@ -142,7 +161,7 @@ class StudioServer(ThreadingHTTPServer):
             if not isinstance(partial, dict):
                 outcome = {
                     "status": "failed", "finished_at": time.time(),
-                    "error": "运行未完成。请检查模型名称、API 环境变量、服务可用性和调用预算；本地页面不会显示上游响应或密钥。",
+                    "error": "运行未完成。请打开模型设置，检查模型名称、连接和调用预算。",
                 }
         with self.job_lock:
             self.jobs[job_id].update(outcome)
@@ -192,12 +211,7 @@ class StudioHandler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if path == "/api/config":
-            self._json(200, {
-                "model": os.getenv("CREATIVITY_MODEL", "").strip(),
-                "judge_model": os.getenv("CREATIVITY_JUDGE_MODEL", "").strip(),
-                "key_present": bool(os.getenv("CREATIVITY_API_KEY") or os.getenv("OPENAI_API_KEY")),
-                "live_ready": live_ready(),
-            })
+            self._json(200, self.server.public_config())
         elif path == "/api/example":
             self._json(200, EXAMPLE)
         elif path.startswith("/api/jobs/"):
@@ -240,8 +254,14 @@ class StudioHandler(BaseHTTPRequestHandler):
         if not self._local_request():
             self.close_connection = True
             return
-        if urlparse(self.path).path != "/api/run":
+        path = urlparse(self.path).path
+        if path not in ("/api/run", "/api/settings", "/api/settings/test", "/api/settings/reset"):
             self._json(404, {"error": "接口不存在。"})
+            self.close_connection = True
+            return
+        if path.startswith("/api/settings") and not secrets.compare_digest(
+                self.headers.get("X-Settings-Token", "").encode("utf-8"), self.server.settings_token.encode("ascii")):
+            self._json(403, {"error": "设置请求已失效，请刷新页面后重试。"})
             self.close_connection = True
             return
         if self.headers.get("Transfer-Encoding"):
@@ -265,24 +285,84 @@ class StudioHandler(BaseHTTPRequestHandler):
             raw = self.rfile.read(length)
             if len(raw) != length:
                 raise ValueError("请求体不完整。")
-            config, demo = validate_request(json.loads(raw.decode("utf-8")))
-        except (ValueError, UnicodeError, TimeoutError) as exc:
+            data = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeError, TimeoutError, RecursionError) as exc:
             message = str(exc) if isinstance(exc, ValueError) and not isinstance(exc, json.JSONDecodeError) else "JSON 格式无效。"
             self._json(400, {"error": message})
             self.close_connection = True
             return
-        if not demo and not live_ready():
-            self._json(400, {"error": "模型配置未就绪。请设置 CREATIVITY_MODEL、有效的 API 地址，以及远程服务所需的密钥环境变量。"})
+        if path.startswith("/api/settings"):
+            self._settings_request(path, data)
             return
-        job_id = self.server.start_job(config, demo)
+        try:
+            config, demo = validate_request(data)
+            job_id = self.server.start_job(config, demo)
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        except (ProviderError, TypeError):
+            self._json(400, {"error": "模型配置未就绪，请点击右上角的模型设置。"})
+            return
         if job_id is None:
             self._json(409, {"error": "已有运行正在进行。请等待完成后再开始。"})
         else:
             self._json(202, {"job_id": job_id, "status": "queued"})
 
+    def _settings_request(self, path: str, data: object) -> None:
+        if path == "/api/settings/reset":
+            if data != {}:
+                self._json(400, {"error": "恢复设置请求必须是空对象。"})
+                return
+            with self.server.settings_lock:
+                self.server.settings = None
+            self._json(200, self.server.public_config())
+            return
+        try:
+            settings = ModelSettings.from_request(data, self.server.settings_snapshot())
+        except ValueError as exc:
+            self._json(400, {"error": str(exc)})
+            return
+        if path == "/api/settings":
+            with self.server.settings_lock:
+                self.server.settings = settings
+            self._json(200, self.server.public_config())
+            return
+        budget = CallBudget(1)
+        try:
+            provider, _ = settings.providers(timeout=15)
+            provider.complete({"purpose": "connection_test", "instruction": 'Return only {"ok": true} as JSON.'},
+                              budget, max_output_tokens=256)
+        except ProviderError as exc:
+            code = re.match(r"Provider HTTP (\d{3}):", str(exc))
+            if code:
+                status = int(code.group(1))
+                hint = {401: "密钥无效，请检查后重新填写。", 403: "该账号无权使用此模型。",
+                        429: "请求限流或额度不足，请稍后重试。",
+                        400: "请检查模型是否支持 JSON 及所选输出长度参数。"}.get(status, "请检查服务可用性。")
+                message = f"连接测试失败（HTTP {status}）：{hint}"
+            else:
+                message = "连接测试失败，请检查接口地址、服务可用性以及模型的 JSON 支持。"
+            self._json(502, {"error": message, "budget": budget.as_dict()})
+            return
+        except Exception:
+            self._json(502, {"error": "连接测试未完成，请检查服务可用性。", "budget": budget.as_dict()})
+            return
+        self._json(200, {"ok": True, "model": settings.model, "budget": budget.as_dict(),
+                         "message": "生成模型连接成功，已收到 JSON 响应。请点击应用设置。"})
+
 
 def serve_main(port: int = 8765, open_browser: bool = False) -> None:
-    server = StudioServer(port)
+    # An old desktop window may still use the default port during an upgrade.
+    # Leave its jobs intact and open the updated app on the next free port.
+    server = None
+    for candidate in range(port, min(port + 10, 65535) + 1):
+        try:
+            server = StudioServer(candidate)
+            break
+        except OSError:
+            continue
+    if server is None:
+        raise RuntimeError("本地端口均被占用，请关闭旧实验室窗口后重试。")
     url = f"http://127.0.0.1:{server.server_address[1]}"
     print(f"Creativity Lab: {url}\n按 Ctrl+C 停止。运行只保留在内存中，请及时导出。")
     if open_browser:

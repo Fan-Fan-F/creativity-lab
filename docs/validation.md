@@ -1,4 +1,18 @@
-# Version 0.1.0 validation
+# Validation record
+
+## Version 0.2.0 — settings verification
+
+Validated on Windows with Python 3.13 on 2026-10-06. Version 0.2.0 adds studio model settings, a short connection test and an apply-settings workflow.
+
+- **87 tests passed** on the final implementation. The suite includes 15 settings integration tests and a deeply nested upstream JSON regression.
+- Real HTTP requests to local scripted responders verified settings → generation and judge requests, Authorization headers, token parameters, single-call connection-test budgets, reset and server isolation. They also verified that settings changes cannot redirect an accepted job or implicitly reuse an existing key at another endpoint.
+- Actual browser flow verified the settings dialog, filling credentials, a successful short test, applying settings and automatic live-mode selection, a complete six-candidate run through a local responder, and restoring settings. Changing the draft endpoint visibly cleared its unsubmitted key.
+- Shipped JavaScript handler checks verified test/apply/reset, token headers, password clearing, equivalent-URL handling, request waiting, Escape and focus restoration.
+- GET responses, job results and exports omit keys; malformed JSON and upstream errors return controlled messages. Port-conflict tests preserve the old app and select a free port for the updated app.
+
+These are software checks using local fixtures. No actual model API was configured, and creativity uplift and human superiority remain unmeasured. The release verification artifact records packaging and remote-download checks separately. Local results do not confirm the cloud Actions run.
+
+## Version 0.1.0 — historical validation
 
 Validated on Windows with Python 3.13 on 2026-10-06.
 

@@ -11,7 +11,7 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Creativity Lab 首页"><span class="brand-mark">✳</span><span>Creativity <strong>Lab</strong></span></a>
-    <span class="top-note"><span class="status-dot"></span>本地实验室 <span class="local">127.0.0.1</span></span>
+    <div class="topbar-actions"><span class="top-note"><span class="status-dot"></span>本地实验室 <span class="local">127.0.0.1</span></span><button id="model-settings" class="settings-button" type="button" aria-haspopup="dialog" aria-controls="model-dialog" aria-label="模型设置"><span aria-hidden="true">⚙</span> 设置</button></div>
   </header>
   <main class="shell">
     <section class="intro">
@@ -26,7 +26,7 @@
           <textarea id="task" name="task" rows="6" required minlength="8" maxlength="12000" placeholder="描述目标、使用场景、预算，以及什么算成功……"></textarea>
           <label for="references">已知条件与资料 <span class="optional">选填 · 每行一条</span></label>
           <textarea id="references" name="references" rows="3" maxlength="60000" placeholder="已有事实、尝试过的方案、不能违反的限制"></textarea>
-          <fieldset class="mode-control"><legend>运行方式</legend><label class="mode-option"><input type="radio" name="provider" value="demo" checked><span><strong>演示</strong><small>无需 API，查看完整流程</small></span></label><label class="mode-option"><input type="radio" name="provider" value="live"><span><strong>真实模型</strong><small id="model-note">正在读取本地配置</small></span></label></fieldset>
+          <fieldset class="mode-control"><legend>运行方式</legend><label class="mode-option"><input id="demo-provider" type="radio" name="provider" value="demo" checked><span><strong>演示</strong><small>无需 API，查看完整流程</small></span></label><label class="mode-option"><input id="live-provider" type="radio" name="provider" value="live"><span><strong>真实模型</strong><small id="model-note">正在读取本地配置</small></span></label></fieldset>
           <p id="mode-notice" class="notice">演示使用固定样例与任务适配，展示流程；分数不代表模型创造力。</p>
           <details class="settings"><summary>实验参数 <span>预算与搜索深度</span></summary><div class="settings-grid"><label for="rounds">探索轮数<input id="rounds" type="number" value="2" min="1" max="8" required></label><label for="candidates">每轮候选<input id="candidates" type="number" value="4" min="2" max="12" required></label><label for="max-calls">调用上限<input id="max-calls" type="number" value="30" min="1" max="200" required></label><label for="seed">随机种子<input id="seed" type="number" value="42" min="0" max="2147483647" required></label></div><label for="search-mode">搜索策略<select id="search-mode"><option value="lab">实验室 · 变换、批评、档案反馈</option><option value="baseline">基线 · 直接重复生成</option></select></label><p class="setting-help">同一任务分别运行两种策略，可导出结果开展盲评。调用上限控制 API 请求次数，费用取决于模型和文本长度。</p></details>
           <button id="run-button" class="primary-button" type="submit"><span>开始探索</span><span aria-hidden="true">→</span></button>
@@ -50,5 +50,26 @@
     <section class="research-strip"><div><p class="eyebrow">RESEARCH INTO PRACTICE</p><h2>把研究变成可测试的方法</h2></div><div class="research-items"><a href="https://arxiv.org/abs/1504.04909" target="_blank" rel="noopener noreferrer"><span>01</span><strong>保留多样性</strong><small>MAP-Elites · 2015 ↗</small></a><a href="https://arxiv.org/abs/2303.17651" target="_blank" rel="noopener noreferrer"><span>02</span><strong>自我改进</strong><small>Self-Refine · 2023 ↗</small></a><a href="https://arxiv.org/abs/2305.10601" target="_blank" rel="noopener noreferrer"><span>03</span><strong>保留多条路径</strong><small>Tree of Thoughts · 2023 ↗</small></a></div><p class="research-foot">研究提供设计依据；当前实现的效果，需要独立的基线对照与人类盲评来验证。</p></section>
   </main>
   <footer><span>Creativity Lab</span><span>想法可以大胆，证据要具体。</span></footer>
+  <dialog id="model-dialog" class="model-dialog" aria-labelledby="model-dialog-title" aria-describedby="model-dialog-description">
+    <form id="model-settings-form" autocomplete="off">
+      <div class="model-dialog-header"><div><p class="eyebrow">MODEL CONNECTION</p><h2 id="model-dialog-title">连接你的模型</h2></div><button id="settings-close" class="dialog-close" type="button" aria-label="关闭模型设置">×</button></div>
+      <p id="model-dialog-description" class="model-dialog-description">在这里填写接口即可使用真实模型。设置仅保存在本次服务启动的内存中；关闭服务后需重新填写。密钥不保存在浏览器中。</p>
+      <fieldset id="model-settings-fields" class="model-settings-fields">
+        <label for="settings-base-url">接口地址</label>
+        <input id="settings-base-url" class="settings-input" type="url" placeholder="https://api.openai.com/v1" maxlength="2048" autocomplete="off" spellcheck="false" required aria-describedby="settings-url-help">
+        <p id="settings-url-help" class="settings-field-help">填写兼容 Chat Completions 的接口根地址，通常以 /v1 结尾。本机接口可以使用 http。</p>
+        <label for="settings-model">模型名称</label>
+        <input id="settings-model" class="settings-input" type="text" placeholder="填写服务商提供的模型名称" maxlength="200" autocomplete="off" spellcheck="false" required>
+        <label for="settings-api-key">API 密钥 <span class="optional">本机模型可留空</span></label>
+        <input id="settings-api-key" class="settings-input" type="password" placeholder="粘贴 API 密钥" maxlength="8192" autocomplete="off" spellcheck="false" aria-describedby="settings-key-help">
+        <p id="settings-key-help" class="settings-field-help">密钥只发送给本地服务，再由本地服务用于模型请求。</p>
+        <details class="model-advanced"><summary>高级设置 <span>评审模型与接口兼容性</span></summary><label for="settings-judge-model">评审模型 <span class="optional">选填 · 留空使用同一模型</span></label><input id="settings-judge-model" class="settings-input" type="text" placeholder="另一评审模型的名称" maxlength="200" autocomplete="off" spellcheck="false"><label for="settings-token-param">输出长度参数</label><select id="settings-token-param" class="settings-input"><option value="max_completion_tokens">max_completion_tokens</option><option value="max_tokens">max_tokens</option></select><p class="settings-field-help">按接口支持的参数选择；较旧的兼容接口可能需要 max_tokens。</p></details>
+      </fieldset>
+      <p class="model-test-note">测试连接会向填写的地址发送一个简短请求，可能产生少量费用；测试不会应用设置。</p>
+      <p id="settings-status" class="settings-status" role="status" aria-live="polite"></p>
+      <div class="model-dialog-actions"><button id="settings-test" class="model-test-button" type="button">测试连接</button><button id="settings-apply" class="primary-button model-apply-button" type="submit"><span>应用设置</span><span aria-hidden="true">→</span></button></div>
+      <div class="model-dialog-bottom"><span id="settings-session-note">仅本次启动有效</span><button id="settings-reset" class="text-button" type="button">恢复启动配置</button></div>
+    </form>
+  </dialog>
 </body>
 </html>

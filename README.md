@@ -6,7 +6,14 @@
 
 ## 先用起来
 
-下载并解压仓库，Windows 双击 **launch.bat**。本地网页中写下你想解决的问题，点“开始探索”，查看不同机制的方案、关键假设、失败风险、最小验证实验和候选档案。可导出 JSON 和 Markdown。macOS/Linux 可从终端运行 `python3 -m creativity_lab serve --open`。
+下载并解压仓库，Windows 双击 **launch.bat** 打开本地网页。0.2.0 可以直接在网页接入模型：
+
+1. 点击右上角 **设置**，填入 OpenAI 兼容接口地址、模型名称与 API 密钥。接口地址通常以 `/v1` 结尾，例如 `https://api.openai.com/v1`，无需附加 `/chat/completions`。
+2. 点击 **测试连接**，确认接口能返回所需 JSON。测试会发送一个短模型请求，可能产生调用费用；测试本身不是创造力评测。
+3. 点击 **应用设置**，再切换到 **真实模型**。需要时可在设置中填写评审模型，并选择 `max_completion_tokens` 或 `max_tokens` 参数。
+4. 输入希望解决的问题和约束，点击 **开始探索**。查看方案、机制差异、关键假设、失败风险、最小验证方法与候选档案；可导出 JSON 和 Markdown。
+
+也可以直接使用预置演示了解流程。macOS/Linux 可从终端运行 `python3 -m creativity_lab serve --open`。
 
 电脑需要已有 Python 3.10 或更高版本；启动器会检测，缺少时会说明原因，不会自动安装。演示无需账号或网络。真实模型模式需要联网，任务和提供的参考资料会发送给你配置的模型服务。
 
@@ -39,9 +46,11 @@
 
 ## 接入真实模型
 
-如果由你的 AI 助手操作，把 [Agent 使用指南](docs/agent-guide.md)交给它，再用自然语言说出目标即可。模型密钥只通过环境变量传入，不写入网页、仓库或运行结果。
+网页 **模型设置** 是日常接入入口。如果由你的 AI 助手操作，把 [Agent 使用指南](docs/agent-guide.md)交给它，再用自然语言说出目标即可。
 
-开发者可在 PowerShell 启动进程前设置：
+设置默认只保存在当前本地服务进程的内存中，不写入磁盘。API 密钥不会通过 GET 配置接口回传，也不会进入运行结果或导出文件。关闭并重启服务后，网页临时设置失效：服务会恢复启动时的环境变量配置，没有环境配置时需要重新填写。网页设置仅影响当前网页服务，不会自动配置另一个终端里的 CLI 进程。
+
+CLI 与已有自动化仍支持环境变量。开发者可在 PowerShell 启动进程前设置：
 
 ```powershell
 $env:CREATIVITY_API_KEY = '你的密钥'
@@ -50,10 +59,12 @@ $env:CREATIVITY_MODEL = '服务商提供的模型名称'
 # $env:CREATIVITY_BASE_URL = 'https://服务商/v1'
 # 可选：使用不同模型进行筛选
 # $env:CREATIVITY_JUDGE_MODEL = '评审模型名称'
+# 可选：部分兼容服务使用此参数
+# $env:CREATIVITY_TOKEN_PARAM = 'max_tokens'
 python -m creativity_lab serve --open
 ```
 
-兼容服务需支持 `/chat/completions`、`response_format: json_object` 和文本 JSON 输出。部分服务需要设置 `CREATIVITY_TOKEN_PARAM=max_tokens`；默认 `max_completion_tokens`。OpenAI 接口依据 [官方 Chat Completions 文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。支持无密钥的 loopback 本地兼容模型；远程接口要求 HTTPS。没有隐藏重试，失败请求也计入调用上限。中途失败会保留已生成候选与用量，明确标为未完成。
+兼容服务需支持 `/chat/completions`、`response_format: json_object` 和文本 JSON 输出。评审模型使用同一接口地址与密钥；留空时使用生成模型。部分服务需要选择 `max_tokens`，默认是 `max_completion_tokens`。OpenAI 接口依据 [官方 Chat Completions 文档](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)。支持无密钥的 loopback 本地兼容模型；远程接口要求 HTTPS。没有隐藏重试，失败请求也计入调用上限。中途失败会保留已生成候选与用量，明确标为未完成。
 
 ## 复现实验
 
@@ -82,4 +93,4 @@ python -m creativity_lab attach-evidence runs/demo.json runs/evidence-template.j
 
 下一步应优先完成真实模型多任务盲评，再考虑语义嵌入查新、可信自动实验适配器、多模型集成和按档案改善自适应分配预算。它们尚未实现。声称“在指定任务上超越人类”之前，需要预先确定人类组、资源预算、评价指标、样本规模和独立验证方式。
 
-版本与边界见 [CHANGELOG](CHANGELOG.md)，系统细节见 [architecture.md](docs/architecture.md)。
+当前版本 **0.2.0**。版本与边界见 [CHANGELOG](CHANGELOG.md)，当前与历史验证状态见 [validation.md](docs/validation.md)，系统细节见 [architecture.md](docs/architecture.md)。

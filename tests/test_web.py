@@ -62,7 +62,7 @@ class WebBoundaryTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/api/run", EXAMPLE, {"Origin": "https://attacker.example"})[0], 403)
         self.assertEqual(self.request("POST", "/api/run", EXAMPLE, {"Sec-Fetch-Site": "cross-site"})[0], 403)
 
-    def test_config_never_returns_secret_or_base_url(self):
+    def test_config_returns_editable_endpoint_but_never_secret(self):
         sentinel = "sk-test-secret-do-not-leak"
         with patch.dict(os.environ, {"CREATIVITY_API_KEY": sentinel, "CREATIVITY_MODEL": "test-model", "CREATIVITY_BASE_URL": "https://private.example/v1"}):
             status, _, body = self.request("GET", "/api/config")
@@ -71,7 +71,8 @@ class WebBoundaryTests(unittest.TestCase):
         self.assertTrue(data["key_present"])
         self.assertEqual(data["model"], "test-model")
         self.assertNotIn(sentinel.encode(), body)
-        self.assertNotIn(b"private.example", body)
+        self.assertEqual(data["base_url"], "https://private.example/v1")
+        self.assertNotIn("api_key", data)
 
     def test_request_limits_and_narrow_schema(self):
         for data in ({**EXAMPLE, "max_calls": 201}, {**EXAMPLE, "rounds": True}, {**EXAMPLE, "base_url": "http://attacker"}, {**EXAMPLE, "references": [""]}, {**EXAMPLE, "mode": "unknown"}):

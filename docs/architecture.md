@@ -1,6 +1,6 @@
 # System architecture
 
-Creativity Lab is a model-agnostic search layer, not a newly trained foundation model. Version 0.1.0 deliberately separates text proposals, model screening, and externally reported measurements.
+Creativity Lab is a model-agnostic search layer, not a newly trained foundation model. Version 0.2.0 retains the separation between text proposals, model screening, and externally reported measurements, and adds an in-process studio configuration interface.
 
 ```mermaid
 flowchart LR
@@ -33,5 +33,7 @@ The lexical proxy uses English word/Chinese bigram Jaccard overlap of descriptio
 `validation.py` binds external measurement rows to the exact idea fields via SHA256. Evidence does not change model scores or automatically drive a new search round in this release. The hash prevents accidental attachment to a revised idea; it does not authenticate who measured it. External artifacts and protocols are reported strings, not automatically checked. No generated code is executed.
 
 `web.py` serves a loopback-only asynchronous UI with bounded inputs, same-origin checks and a single active run. Jobs live in memory; export them before stopping the server. Model outputs are rendered as text. No remotely hosted service or model weights are shipped.
+
+The studio's model settings cover the compatible API base URL, generator model, API key, optional judge model and completion-token parameter. Applying settings updates only the current service's in-memory configuration; there is no default disk persistence. GET configuration responses and run exports do not include the key. A restart restores the startup environment configuration, or requires the user to enter settings again. Separate CLI processes continue to use their own environment variables. The judge model uses the same endpoint and key. Testing a connection sends a short JSON model request and may incur provider charges; it does not measure creative quality.
 
 Provider and schema errors carry a sanitized partial run: already validated candidates, previous archive entries, failed-call budget and a generic failure event survive. CLI stores it and exits unsuccessfully; the studio displays it as an incomplete result. A failed batch remains unreviewed. The run cannot enter a blind comparison until an eligible completed run is available.

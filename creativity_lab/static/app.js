@@ -5,6 +5,9 @@ let currentJobId = null;
 let selectedIdea = null;
 let serverConfig = {};
 let running = false;
+let settingsBusy = false;
+let settingsOpener = null;
+let draftKeyAddress = "";
 const clamp = (value) => Math.max(0, Math.min(1, Number(value) || 0));
 const hasScore = (idea, key) => typeof idea.scores?.[key] === "number" && Number.isFinite(idea.scores[key]);
 const textValue = (value) => Array.isArray(value) ? value.map(textValue).join("\n") : value && typeof value === "object" ? JSON.stringify(value, null, 2) : String(value ?? "尚未提供");
@@ -27,7 +30,113 @@ function setStatus(message, error = false) {
 function selectedDemo() { return document.querySelector('input[name="provider"]:checked').value === "demo"; }
 function modeChanged() {
   const demo = selectedDemo();
-  $("mode-notice").textContent = demo ? "演示使用固定样例与任务适配，展示流程；分数不代表模型创造力。" : "任务与资料将发送至服务器环境变量配置的模型服务。评分是模型判断，想法仍需要实验验证。";
+  $("mode-notice").textContent = demo ? "演示使用固定样例与任务适配，展示流程；分数不代表模型创造力。" : serverConfig.live_ready ? "任务与资料将发送至模型设置中的接口。评分是模型判断，想法仍需要实验验证。" : "点击右上角“设置”，填写模型接口后即可探索。";
+}
+function applyPublicConfig(config) {
+  serverConfig = config;
+  $("model-note").textContent = config.live_ready ? config.model : "点击右上角设置模型接口";
+  $("settings-session-note").textContent = config.session_configured ? "当前使用本次启动中填写的设置" : "当前使用启动时的配置";
+  modeChanged();
+}
+function settingsStatus(message, error = false) {
+  $("settings-status").textContent = message;
+  $("settings-status").classList.toggle("error", error);
+}
+function updateSettingsControls() {
+  $("model-settings").disabled = running || settingsBusy;
+  $("model-settings-fields").disabled = settingsBusy;
+  for (const id of ["settings-test", "settings-apply", "settings-reset", "settings-close"]) $(id).disabled = settingsBusy || running;
+  $("run-button").disabled = running || settingsBusy;
+}
+function settingsLoading(value, message) {
+  settingsBusy = value;
+  $("model-settings-form").setAttribute("aria-busy", String(value));
+  updateSettingsControls();
+  if (message) settingsStatus(message);
+}
+function normalizeDraftAddress(url) {
+  let value = String(url || "").trim().replace(/\/+$/, "");
+  if (value.endsWith("/chat/completions")) value = value.slice(0, -"/chat/completions".length).replace(/\/+$/, "");
+  try {
+    const parsed = new URL(value);
+    // Retain explicit ports and the raw path to match backend URL normalization.
+    const parts = value.match(/^([a-z][a-z0-9+.-]*):\/\/([^/?#]+)(.*)$/i);
+    if (parts && ["http:", "https:"].includes(parsed.protocol)) return `${parsed.protocol}//${parts[2].toLowerCase()}${parts[3]}`;
+  } catch (_) { /* A changed incomplete address also invalidates its draft key. */ }
+  return value;
+}
+function keyHint() {
+  const addressChanged = normalizeDraftAddress($("settings-base-url").value) !== normalizeDraftAddress(serverConfig.base_url);
+  $("settings-api-key").placeholder = serverConfig.key_present && !addressChanged ? "已有密钥；留空沿用" : "粘贴 API 密钥，本机模型可留空";
+  $("settings-key-help").textContent = addressChanged ? "更换接口地址后，远程服务需要重新填写密钥；已有密钥不会转发到新地址。" : serverConfig.key_present ? "已有密钥。留空沿用当前密钥，填写新密钥可替换。密钥不会回显或保存在浏览器中。" : "密钥仅保存在本次服务启动中。远程服务需要密钥，本机模型可留空。";
+}
+function draftAddressChanged() {
+  const address = normalizeDraftAddress($("settings-base-url").value);
+  if (address !== draftKeyAddress) {
+    $("settings-api-key").value = "";
+    draftKeyAddress = address;
+    settingsStatus("接口地址已改变，已清空未应用的密钥。请为新接口重新填写密钥；本机模型可留空。");
+  }
+  keyHint();
+}
+function fillModelSettings() {
+  $("settings-base-url").value = serverConfig.base_url || "https://api.openai.com/v1";
+  $("settings-model").value = serverConfig.model || "";
+  $("settings-judge-model").value = serverConfig.judge_model || "";
+  $("settings-token-param").value = serverConfig.token_param === "max_tokens" ? "max_tokens" : "max_completion_tokens";
+  $("settings-api-key").value = "";
+  draftKeyAddress = normalizeDraftAddress($("settings-base-url").value);
+  keyHint();
+}
+async function openModelSettings() {
+  if (running || settingsBusy) return;
+  settingsOpener = document.activeElement;
+  fillModelSettings();
+  $("model-dialog").showModal();
+  settingsLoading(true, "正在读取当前模型设置…");
+  try {
+    applyPublicConfig(await api("/api/config"));
+    fillModelSettings();
+    settingsStatus("填写接口和模型后，可以先测试连接，再应用设置。");
+  } catch (error) { settingsStatus("无法读取本地服务配置，请确认实验室仍在运行。", true); }
+  finally { settingsLoading(false); $("settings-base-url").focus(); }
+}
+function settingsPayload() {
+  draftAddressChanged();
+  return {
+    base_url: $("settings-base-url").value.trim(), model: $("settings-model").value.trim(),
+    api_key: $("settings-api-key").value.trim(), judge_model: $("settings-judge-model").value.trim(),
+    token_param: $("settings-token-param").value,
+  };
+}
+async function submitSettings(action) {
+  if (running || settingsBusy) return;
+  if (action !== "reset" && !$("model-settings-form").reportValidity()) return;
+  if (!serverConfig.settings_token) { settingsStatus("设置连接尚未就绪，请关闭对话框后重新打开。", true); return; }
+  const path = action === "apply" ? "/api/settings" : `/api/settings/${action}`;
+  const payload = action === "reset" ? {} : settingsPayload();
+  settingsLoading(true, action === "test" ? "正在向填写的接口发送短测试请求…" : action === "reset" ? "正在恢复启动配置…" : "正在应用模型设置…");
+  try {
+    const result = await api(path, {method: "POST", headers: {"Content-Type": "application/json", "X-Settings-Token": serverConfig.settings_token}, body: JSON.stringify(payload)});
+    if (action === "test") {
+      settingsStatus((result.message || `连接测试成功，模型：${result.model || payload.model}。`) + " 设置尚未应用。");
+    } else {
+      applyPublicConfig(result);
+      $("settings-api-key").value = "";
+      if (action === "apply") {
+        $("live-provider").checked = true;
+        modeChanged();
+        $("model-dialog").close();
+        setStatus("模型设置已应用，可以开始真实模型探索。设置仅在本次服务启动中有效。");
+      } else {
+        if (!result.live_ready) $("demo-provider").checked = true;
+        modeChanged();
+        fillModelSettings();
+        settingsStatus("已恢复启动时的配置。你也可以重新填写接口。");
+      }
+    }
+  } catch (error) { settingsStatus(error.message || "模型设置请求失败，请检查接口配置后重试。", true); }
+  finally { settingsLoading(false); if (!$("model-dialog").open && settingsOpener?.focus) settingsOpener.focus(); }
 }
 async function fillExample() {
   try {
@@ -39,7 +148,7 @@ async function fillExample() {
 }
 function busy(value) {
   running = value;
-  $("run-button").disabled = value;
+  updateSettingsControls();
   $("example").disabled = value;
   $("run-button").firstElementChild.textContent = value ? "探索进行中…" : "开始探索";
   $("loading-state").hidden = !value;
@@ -49,10 +158,11 @@ function busy(value) {
 }
 async function run(event) {
   event.preventDefault();
-  if (running) return;
+  if (running || settingsBusy) return;
   const demo = selectedDemo();
   if (!demo && !serverConfig.live_ready) {
-    setStatus("模型配置未就绪。请设置 CREATIVITY_MODEL 和 API 地址；远程服务需要密钥，本机模型可不设密钥。修改环境变量后重启服务。", true);
+    setStatus("点击右上角“设置”填写模型接口，即可开始真实模型探索。", true);
+    openModelSettings();
     return;
   }
   const data = {
@@ -214,7 +324,13 @@ document.querySelectorAll('input[name="provider"]').forEach((input) => input.add
 $("sort-ideas").addEventListener("change", () => currentRun && renderIdeas());
 $("export-json").addEventListener("click", () => downloadAttachment("json"));
 $("export-md").addEventListener("click", () => downloadAttachment("md"));
-api("/api/config").then((config) => {
-  serverConfig = config;
-  $("model-note").textContent = config.live_ready ? config.model : "需配置模型与 API 环境变量";
-}).catch(() => { $("model-note").textContent = "本地服务连接失败"; });
+$("model-settings").addEventListener("click", openModelSettings);
+$("settings-base-url").addEventListener("input", draftAddressChanged);
+$("settings-api-key").addEventListener("input", () => { draftKeyAddress = normalizeDraftAddress($("settings-base-url").value); });
+$("settings-test").addEventListener("click", () => submitSettings("test"));
+$("settings-reset").addEventListener("click", () => submitSettings("reset"));
+$("model-settings-form").addEventListener("submit", (event) => { event.preventDefault(); submitSettings("apply"); });
+$("settings-close").addEventListener("click", () => { if (!settingsBusy) $("model-dialog").close(); });
+$("model-dialog").addEventListener("cancel", (event) => { if (settingsBusy) { event.preventDefault(); settingsStatus("正在等待当前设置请求完成，请稍候。", false); } });
+$("model-dialog").addEventListener("close", () => { $("settings-api-key").value = ""; settingsStatus(""); if (settingsOpener?.focus) settingsOpener.focus(); });
+api("/api/config").then(applyPublicConfig).catch(() => { $("model-note").textContent = "本地服务连接失败"; });
